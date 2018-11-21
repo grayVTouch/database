@@ -58,11 +58,11 @@ class Table
     // not between
     protected $_notBetween = [];
 
-    // 当前执行的 sql 语句
-    public $_sql = '';
+    // 当前执行的 sql 语句（预编译语句）
+    protected $_sql = '';
 
     // 预处理语句参数
-    public $_param = [];
+    protected $_param = [];
 
     function __construct(Database $db , $table , $prefix , bool $enable_log = true , $log_dir = ''){
         $this->_db      = $db;
@@ -254,12 +254,11 @@ class Table
         }
         foreach ($this->_between as $k => $v)
         {
-            $field          = md5("between-field-{$k}-field");
+            $field          = $this->_safeName($v[0]);
             $condition_one  = md5("between-field-{$k}-one");
             $condition_two  = md5("between-field-{$k}-two");
             $join           = $v[3];
-            $this->_sql .= "(:{$field} between :{$condition_one} and :{$condition_two}) {$join} ";
-            $this->_param[$field] = $v[0];
+            $this->_sql .= "({$field} between :{$condition_one} and :{$condition_two}) {$join} ";
             $this->_param[$condition_one] = $v[1];
             $this->_param[$condition_two] = $v[2];
         }
@@ -279,12 +278,11 @@ class Table
         }
         foreach ($this->_notBetween as $k => $v)
         {
-            $field          = md5("not-between-field-{$k}-field");
+            $field          = $this->_safeName($v[0]);
             $condition_one  = md5("not-between-field-{$k}-one");
             $condition_two  = md5("not-between-field-{$k}-two");
             $join           = $v[3];
-            $this->_sql .= "(:{$field} not between :{$condition_one} and :{$condition_two}) {$join} ";
-            $this->_param[$field] = $v[0];
+            $this->_sql .= "({$field} not between :{$condition_one} and :{$condition_two}) {$join} ";
             $this->_param[$condition_one] = $v[1];
             $this->_param[$condition_two] = $v[2];
         }
@@ -302,13 +300,13 @@ class Table
             });
             foreach ($this->_where as $v)
             {
+                $field = $this->_safeName($v[0]);
                 $statistics[$v[0]]++;
                 $key =  md5('_' . $statistics[$v[0]] . '_' . $v[0]);
                 $condition = (!isset($v[3]) ? 'and' : $v[3]) . ' ';
-                $this->_sql .= $v[0] . ' ' . $v[1] . ' :' . $key . ' ' . $condition;
+                $this->_sql .= $field . ' ' . $v[1] . ' :' . $key . ' ' . $condition;
                 $this->_param[$key] = $v[2];
             }
-            // $this->_sql = mb_substr($this->_sql , 0 , mb_strlen() - mb_strlen($condition));
             $this->_sql = rtrim($this->_sql , $condition);
         }
     }
@@ -316,8 +314,8 @@ class Table
     // 字符串拼接：group by
     protected function _groupBy_(){
         if (!empty($this->_groupBy)) {
-            $this->_sql .= ' group by :group';
-            $this->_param['group'] = $this->_groupBy;
+            $group_by = $this->_safeName($this->_groupBy);
+            $this->_sql .= ' group by ' . $group_by;
         }
     }
 
@@ -334,10 +332,9 @@ class Table
             $this->_sql .= ' order by';
             foreach ($this->_orderBy as $k => $v)
             {
-                $field = md5("order-field-{$k}");
-                $value = md5("order-value-{$k}");
-                $this->_sql  .= " :{$field} :{$value} ,";
-                $this->_param[$field] = $v['field'];
+                $field = $this->_safeName($v['field']);
+                $value = md5("order-{$k}");
+                $this->_sql  .= " {$field} :{$value} ,";
                 $this->_param[$value] = $v['order'];
             }
             $this->_sql = rtrim($this->_sql , ',');
@@ -386,9 +383,10 @@ class Table
         $condition = '';
         foreach ($this->_in as $v)
         {
+            $field = $this->_safeName($v[0]);
             $condition = $v[3] . ' ';
             $range = implode(' , ' , $v[2]);
-            $this->_sql .= $v[0] . ' ' . $v[1] . ' (' . $range . ') ' .  $condition;
+            $this->_sql .= $field . ' ' . $v[1] . ' (' . $range . ') ' .  $condition;
         }
         $this->_sql = rtrim($this->_sql , $condition);
     }
@@ -410,28 +408,29 @@ class Table
         $condition = '';
         foreach ($this->_notIn as $v)
         {
+            $field = $this->_safeName($v[0]);
             $condition = $v[3] . ' ';
             $range = implode(' , ' , $v[2]);
-            $this->_sql .= $v[0] . ' ' . $v[1] . ' (' . $range . ') ' . $condition;
+            $this->_sql .= $field . ' ' . $v[1] . ' (' . $range . ') ' . $condition;
         }
         $this->_sql = rtrim($this->_sql , $condition);
     }
 
     // update：返回受影响的行数
-    public function update(array $data = [] , $debug = false){
+    public function update(array $data = [] , $debug = false , $detail = false){
         if (empty($data)) {
             return ;
         }
         $this->_sql    = 'update ';
         $this->_sql   .= $this->_prefix . $this->_table;
-        $param = [];
         $this->_join_();
         $this->_sql .= ' set';
         foreach ($data as $k => $v)
         {
-            $key = md5('__' . $k);
-            $this->_sql .= ' ' . $k . ' = :' . $key . ' ,';
-            $this->_param[$key] = $v;
+            $field = $this->_safeName($k);
+            $value = md5('update-' . $k);
+            $this->_sql .= sprintf(' %s = :%s ,' , $field  , $value);
+            $this->_param[$value] = $v;
         }
         $this->_sql = rtrim($this->_sql , ',');
         // where 字符串拼接
@@ -446,6 +445,9 @@ class Table
         $this->_offset_();
         $this->_limit_();
         if ($debug) {
+            if ($detail) {
+                return $this->_sqlRaw();
+            }
             return $this->_sql;
         }
         // 记录查询日志
@@ -455,19 +457,24 @@ class Table
         return $this->_db->rowCount();
     }
 
-    // 获取所有记录
-    public function get($debug = false){
+    // select：获取所有记录
+    public function get($debug = false , $detail = false){
         $this->_sql    = 'select ';
-        $param = [];
         if (empty($this->_select)) {
             $this->_sql .= '*';
         } else {
-            $this->_sql .= implode(' , ' , $this->_select);
+            $select = array_map(function($v){
+                return $this->_safeName($v);
+            } , $this->_select);
+            $this->_sql .= implode(' , ' , $select);
         }
         $this->_sql .= ' from ';
         $this->_sql  = $this->_generate();
         if ($debug) {
-            return $this->_sql;
+            if ($detail) {
+                return $this->_sql;
+            }
+            return $this->_sqlRaw();
         }
         // 记录数据库查询日志
         $this->log();
@@ -475,24 +482,24 @@ class Table
     }
 
     // 获取单条记录
-    public function first($debug = false){
+    public function first($debug = false , $detail = false){
         if ($debug) {
-            return $this->get(true);
+            return $this->get(true , $detail);
         }
         return $this->get()[0] ?? null;
     }
 
     // 获取单条记录中j的单个字段
-    public function value($key = '' , $debug = false){
+    public function value($key = '' , $debug = false , $detail = false){
         if ($debug) {
-            return $this->first(true);
+            return $this->first(true , $detail);
         }
         $data = $this->first();
         return is_null($data) ? $data : ($data->$key ?? null);
     }
 
     // 计算
-    protected function cal($type , $name , $amount , $debug){
+    protected function cal($type , $name , $amount , $debug , $detail){
         $type_range = ['incr' , 'decr'];
         $type       = in_array($type , $type_range) ? $type : 'incr';
         $this->select($name);
@@ -500,25 +507,27 @@ class Table
         $change = $type === 'incr' ? $origin + $amount : $origin - $amount;
         return $this->update([
             $name => $change
-        ] , $debug);
+        ] , $debug , $detail);
     }
 
     // 针对单个字段 +1
-    public function incr($name , $amount = 1 , $debug = false){
-        return $this->cal('incr' , $name , $amount , $debug);
+    public function incr($name , $amount = 1 , $debug = false , $detail = false){
+        return $this->cal('incr' , $name , $amount , $debug , $detail);
     }
 
     // 针对单个字段 -1
-    public function decr($name , $amount , $debug = false){
-        return $this->cal('decr' , $name , $amount , $debug);
+    public function decr($name , $amount , $debug = false , $detail = false){
+        return $this->cal('decr' , $name , $amount , $debug , $detail);
     }
 
     // 合计函数
-    public function count($debug = false){
+    public function count($debug = false , $detail = false){
         $this->_sql    = 'select count(*) from ';
-        $param = [];
-        $this->_sql = $this->_generate();
+        $this->_generate();
         if ($debug) {
+            if ($detail) {
+                return $this->_debug();
+            }
             return $this->_sql;
         }
         $this->log();
@@ -527,11 +536,14 @@ class Table
     }
 
     // 合计函数
-    public function sum($column , $debug = false){
+    public function sum($column , $debug = false , $detail = false){
+        $column = $this->_safeName($column);
         $this->_sql    = "select sum({$column}) from ";
-        $param = [];
-        $this->_sql = $this->_generate();
+        $this->_generate();
         if ($debug) {
+            if ($detail) {
+                return $this->_debug();
+            }
             return $this->_sql;
         }
         $this->log();
@@ -540,11 +552,14 @@ class Table
     }
 
     // 平均值函数
-    public function avg($column , $debug = false){
+    public function avg($column , $debug = false , $detail = false){
+        $column = $this->_safeName($column);
         $this->_sql    = "select avg({$column}) from ";
-        $param = [];
-        $this->_sql = $this->_generate();
+        $this->_generate();
         if ($debug) {
+            if ($detail) {
+                return $this->_debug();
+            }
             return $this->_sql;
         }
         $this->log();
@@ -553,11 +568,14 @@ class Table
     }
 
     // 最大值
-    public function max($column , $debug = false){
+    public function max($column , $debug = false , $detail = false){
+        $column = $this->_safeName($column);
         $this->_sql    = "select max({$column}) from ";
-        $param = [];
-        $this->_sql = $this->_generate();
+        $this->_generate();
         if ($debug) {
+            if ($detail) {
+                return $this->_debug();
+            }
             return $this->_sql;
         }
         $this->log();
@@ -565,12 +583,16 @@ class Table
     }
 
     // 最大值
-    public function min($column){
+    public function min($column , $debug = false , $detail = false){
+        $column = $this->_safeName($column);
         $this->_sql    = "select min({$column}) from ";
-        $param = [];
-        $this->_sql = $this->_generate();
-        // 保存当前执行的 sql 语句
-        $this->sql = $this->_sql;
+        $this->_generate();
+        if ($debug) {
+            if ($detail) {
+                return $this->_debug();
+            }
+            return $this->_sql;
+        }
         $this->log();
         return $this->_db->get($this->_sql , $this->_param);
     }
@@ -592,11 +614,13 @@ class Table
     }
 
     // 删除
-    public function delete($debug = false){
-        $param = [];
+    public function delete($debug = false , $detail = false){
         $this->_sql    = 'delete from ';
-        $this->_sql = $this->_generate();
+        $this->_generate();
         if ($debug) {
+            if ($detail) {
+                return $this->_debug();
+            }
             return $this->_sql;
         }
         $this->log();
@@ -605,18 +629,21 @@ class Table
     }
 
     // 删除的别名
-    public function del($debug = false){
-        return $this->delete($debug);
+    public function del($debug = false , $detail = false){
+        return $this->delete($debug , $detail);
     }
 
     // insert，返回受影响的行数
-    public function insert(array $data = [] , $debug = false){
-        $param = [];
+    public function insert(array $data = [] , $debug = false , $detail = false){
         $this->_sql = 'insert into  ';
         $this->_sql .= $this->_prefix . $this->_table;
+        $this->_sql .= ' (';
         $keys = array_keys($data);
-        $this->_sql .= '(' . implode(' , ' , $keys) . ')';
-        $this->_sql .= ' values ';
+        array_walk($keys , function(&$v){
+            $v = $this->_safeName($v);
+        });
+        $this->_sql .= implode(' , ' , $keys);
+        $this->_sql .= ') values ';
         $this->_sql .= '(';
         foreach ($data as $k => $v)
         {
@@ -627,6 +654,9 @@ class Table
         $this->_sql = rtrim($this->_sql , ',');
         $this->_sql .= ')';
         if ($debug) {
+            if ($detail) {
+                return $this->_debug();
+            }
             return $this->_sql;
         }
         $this->log();
@@ -635,13 +665,16 @@ class Table
     }
 
     // insertGetId，返回插入记录的id
-    public function insertGetId(array $data = [] , $debug = false){
-        $param = [];
+    public function insertGetId(array $data = [] , $debug = false , $detail = false){
         $this->_sql = 'insert into  ';
         $this->_sql .= $this->_prefix . $this->_table;
+        $this->_sql .= ' (';
         $keys = array_keys($data);
-        $this->_sql .= '(' . implode(' , ' , $keys) . ')';
-        $this->_sql .= ' values ';
+        array_walk($keys , function(&$v){
+            $v = $this->_safeName($v);
+        });
+        $this->_sql .= implode(' , ' , $keys);
+        $this->_sql .= ') values ';
         $this->_sql .= '(';
         foreach ($data as $k => $v)
         {
@@ -652,6 +685,9 @@ class Table
         $this->_sql = rtrim($this->_sql , ',');
         $this->_sql .= ')';
         if ($debug) {
+            if ($detail) {
+                return $this->_debug();
+            }
             return $this->_sql;
         }
         $this->log();
@@ -660,7 +696,7 @@ class Table
     }
 
     // 生成 sql 语句
-    protected function _generate(array $param = []){
+    protected function _generate(){
         $this->_sql  = rtrim($this->_sql , ' ');
         $this->_sql .= ' ';
         $this->_sql .= $this->_prefix . $this->_table;
@@ -675,7 +711,6 @@ class Table
         $this->_orderBy_();
         $this->_offset_();
         $this->_limit_();
-        return $this->_sql;
     }
 
     // 记录查询日志
@@ -685,6 +720,16 @@ class Table
         }
         $log = sprintf("[%s] %s\r\n" , date('Y-m-d H:i:s') , $this->_sql);
         $this->_log->log($log);
+    }
+
+    // 替换预处理语句中的占位符，填充上实际的值
+    protected function _debug(){
+        $this->_db->debug($this->_sql , $this->_param);
+    }
+
+    // 生成安全字段名声
+    protected function _safeName($field = ''){
+        return sprintf('`%s`' , $field);
     }
 }
 

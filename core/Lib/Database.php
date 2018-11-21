@@ -22,6 +22,9 @@ class Database {
     // 结果集为匿名对象
     protected  $_fetchType		= PDO::FETCH_OBJ;
 
+    // 最后一次查询
+    protected $_sql = '';
+
     /**
      * Database constructor.
      * @param string $db_type 数据库类型
@@ -58,6 +61,11 @@ class Database {
 		return $this->_connect;
 	}
 
+	// 最后执行的一条 sql 语句
+    public function lastSql(){
+
+    }
+
 	/*
 	 * 获取最后插入数据库的一条数据
 	 */
@@ -81,9 +89,9 @@ class Database {
             {
                 $keys   = array_keys($v);
                 $_sql   = $v[$keys[0]];
-                $params = $v[$keys[1]];
+                $param = $v[$keys[1]];
                 $stmt = $this->_connect->prepare($_sql);
-                foreach ($params as $k1 => $v1)
+                foreach ($param as $k1 => $v1)
                 {
                     $k1 = ltrim($k1 , ':');
                     $stmt->bindValue(":{$k1}" , $v1 , $this->type($v1));
@@ -158,31 +166,10 @@ class Database {
         throw new Exception("MySQL 不支持的数据类型");
     }
 
-	/*
-	 * 用法1：直接执行原生的 sql 语句
-	 * 用法2：预处理语句方式执行 sql 语句
-	 * 第一种情况：$sql 是字符串
-	 * 第二种情况：$sql 是数组，则须符合下面这种：
-		$sql = array(
-			// 原生语句
-			'select * from person' => [] ,	
-			// SQL 预处理语句第一种方式
-			'select * from person where name = :nameValue and sex = :sexValue' => array(
-				'nameValue' => 'chenxuelong' , 
-				'sexValue'  => 'male'
-			) , 
-			// SQL 预处理语句第二种方式
-			'select * from person where name = ? and sex = ?' => array('chenxuelong' , 'male')
-		);
-
-	 * @param  Array|String  $sql
-	 * @param  Array         $params
-	 * @param  Boolean       $transaction_mode
-	 * @return QueryResult|Null
-	 */
-	public  function query($sql = '' , array $params = []){
+	// 执行预处理查询
+	public function query($sql = '' , array $param = []){
         $stmt = $this->_connect->prepare($sql);
-        array_walk($params , function($v , $k) use($stmt){
+        array_walk($param , function($v , $k) use($stmt){
             $k = ltrim($k , ':');
             $stmt->bindValue(":{$k}" , $v , $this->type($v));
         });
@@ -193,6 +180,24 @@ class Database {
         }
         return $stmt;
 	}
+
+	// 查看要执行的预处理语句，实际发送给 mysql 的内容
+    public function debug($sql = '' , array $param = []){
+        $stmt = $this->_connect->prepare($sql);
+        array_walk($param , function($v , $k) use($stmt){
+            $k = ltrim($k , ':');
+            $stmt->bindValue(":{$k}" , $v , $this->type($v));
+        });
+        try {
+            $this->startTrans();
+            // 事务
+            $stmt->execute();
+            $stmt->debugDumpParams();
+            $this->rollback();
+        } catch(Exception $e) {
+            $stmt->debugDumpParams();
+        }
+    }
 
 	// 错误提示
     protected function _errMsg($sql , $msg){
@@ -208,14 +213,14 @@ class Database {
 	 * 若是获取的记录只有一个字段，则直接返回单元值
 	 * 若是获取的记录不止一个字段，则返回整条记录
 	 * @param  String $sql      待执行的 SQL 语句
-	 * @param  Array  $params   如果是预处理 SQL 语句，则需提供参数
+	 * @param  Array  $param   如果是预处理 SQL 语句，则需提供参数
 	 * @return Mixed
 	 */ 
-	public  function get($sql = '' , array $params = []){
+	public  function get($sql = '' , array $param = []){
 		if (!is_string($sql)) {
 			throw new Exception('参数 1 类型错误');
 		}
-		$PDOStatement   = $this->query($sql , $params);
+		$PDOStatement   = $this->query($sql , $param);
         $res            = $this->format($PDOStatement);
 		// 无数据时
 		if (empty($res)) {
@@ -240,14 +245,14 @@ class Database {
 	/*
 	 *原生执行获取所有记录
 	 * @param  String $sql      待执行的 SQL 语句
-	 * @param  Array  $params   如果是预处理 SQL 语句，则需提供参数
+	 * @param  Array  $param   如果是预处理 SQL 语句，则需提供参数
 	 * @return Array 
 	*/
-	public  function getAll($sql = '' , array $params = []){
+	public  function getAll($sql = '' , array $param = []){
 		if (!is_string($sql)) {
 			throw new Exception('参数 1 类型错误');
 		}
-		$PDOStatement   = $this->query($sql , $params);
+		$PDOStatement   = $this->query($sql , $param);
 		$result         = $this->format($PDOStatement);
 		return $result;
 	}
